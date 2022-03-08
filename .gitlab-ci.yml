@@ -1,0 +1,13 @@
+build:
+  tags:
+    - docker
+  image: docker.io/nixos/nix
+  stage: build
+  script:
+    - nix-env -i buildah
+    - mkdir -p /etc/containers
+    - mv containers-policy.json /etc/containers/policy.json
+    - buildah login -u "${CI_REGISTRY_USER}" -p "${CI_REGISTRY_PASSWORD}" "${CI_REGISTRY}"
+    - buildah pull docker-archive:$(nix-build)
+    - buildah tag proxy46 "${CI_REGISTRY_IMAGE}"
+    - buildah push -f v2s2 --all "${CI_REGISTRY_IMAGE}"

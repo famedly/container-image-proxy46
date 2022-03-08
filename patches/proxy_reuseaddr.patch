@@ -1,0 +1,23 @@
+Set SO_REUSEADDR to 1 when binding a socket to a specific port to prevent
+EADDRINUSE for new connections with the same 4-tuple as a recently closed
+connection.
+
+A new connection should use a new 4-tuple, but in a port-transparent proxy,
+the client is responsible for choosing an appropriate port number. The proxy
+should accept this port number, because the proxy would close the
+connection unexpectedly otherwise.
+
+Mainline sets SO_REUSEADDR for datagram sockets, so this patch just relaxes
+the condition.
+
+--- a/src/event/ngx_event_connect.c
++++ b/src/event/ngx_event_connect.c
+@@ -134,7 +134,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
+ 
+ #if (NGX_LINUX)
+ 
+-        if (pc->type == SOCK_DGRAM && port != 0) {
++        if (port != 0) {
+             int  reuse_addr = 1;
+ 
+             if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR,
