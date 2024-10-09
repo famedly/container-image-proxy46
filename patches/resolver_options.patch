@@ -1,47 +1,12 @@
-This patches implements the `ipv4=` and `expect_a=` options for the resolver.
+This patch implements the `expect_a=` option for the resolver.
 
-The ipv4 option can be set to off to ignore resolved IPv4 addresses, so just 
-the IPv6 addresses are used. In contrast to the ipv6 option, the A records are 
-always queried from the nameserver regardless of the ipv4 option.
-
-The expect_a option turns the whole answer to NXDOMAIN if the specific A record 
-is not included in the response (very special purpose).
+The expect_a option turns the whole answer to NXDOMAIN if the specific A record
+is not included in the response. Otherwise, all A records are removed, keeping
+only the AAAA records.
 
 --- a/src/core/ngx_resolver.c
 +++ b/src/core/ngx_resolver.c
-@@ -175,6 +175,7 @@ ngx_resolver_create(ngx_conf_t *cf, ngx_str_t *names, ngx_uint_t n)
-     ngx_queue_init(&r->addr_expire_queue);
- 
- #if (NGX_HAVE_INET6)
-+    r->ipv4 = 1;
-     r->ipv6 = 1;
- 
-     ngx_rbtree_init(&r->addr6_rbtree, &r->addr6_sentinel,
-@@ -225,6 +226,23 @@ ngx_resolver_create(ngx_conf_t *cf, ngx_str_t *names, ngx_uint_t n)
-         }
- 
- #if (NGX_HAVE_INET6)
-+        if (ngx_strncmp(names[i].data, "ipv4=", 5) == 0) {
-+
-+            if (ngx_strcmp(&names[i].data[5], "on") == 0) {
-+                r->ipv4 = 1;
-+
-+            } else if (ngx_strcmp(&names[i].data[5], "off") == 0) {
-+                r->ipv4 = 0;
-+
-+            } else {
-+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-+                                   "invalid parameter: %V", &names[i]);
-+                return NULL;
-+            }
-+
-+            continue;
-+        }
-+
-         if (ngx_strncmp(names[i].data, "ipv6=", 5) == 0) {
- 
-             if (ngx_strcmp(&names[i].data[5], "on") == 0) {
-@@ -241,6 +259,15 @@ ngx_resolver_create(ngx_conf_t *cf, ngx_str_t *names, ngx_uint_t n)
+@@ -260,6 +260,15 @@
  
              continue;
          }
@@ -57,21 +22,20 @@ is not included in the response (very special purpose).
  #endif
  
          ngx_memzero(&u, sizeof(ngx_url_t));
-@@ -273,6 +300,13 @@ ngx_resolver_create(ngx_conf_t *cf, ngx_str_t *names, ngx_uint_t n)
+@@ -292,6 +301,12 @@
          }
      }
  
-+#if (NGX_HAVE_INET6)
-+    if (!r->ipv4 && !r->ipv6) {
-+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "neither ipv4 nor ipv6 enabled");
-+        return NULL;
++    if (r->expect_a) {
++        // both address families need to be fetched for expect_a
++        r->ipv4 = 1;
++        r->ipv6 = 1;
 +    }
-+#endif
 +
-     if (n && r->connections.nelts == 0) {
-         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "no name servers defined");
-         return NULL;
-@@ -2067,6 +2101,7 @@ ngx_resolver_process_a(ngx_resolver_t *r, u_char *buf, size_t n,
+ #if (NGX_HAVE_INET6)
+     if (r->ipv4 + r->ipv6 == 0) {
+         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+@@ -2098,6 +2113,7 @@
          }
  #endif
  
@@ -79,12 +43,13 @@ is not included in the response (very special purpose).
          code = NGX_RESOLVE_NXDOMAIN;
      }
  
-@@ -2399,6 +2434,30 @@ ngx_resolver_process_a(ngx_resolver_t *r, u_char *buf, size_t n,
+@@ -2429,6 +2445,24 @@
+ #if (NGX_HAVE_INET6)
          naddrs += rn->naddrs6;
  #endif
- 
 +        if (r->expect_a) {
-+            if (rn->naddrs == (u_short) -1 || !rn->naddrs) {
++            naddrs = (rn->naddrs6 == (u_short) -1) ? 0 : rn->naddrs6;
++            if (!naddrs || rn->naddrs == (u_short) -1 || !rn->naddrs) {
 +                goto nxdomain;
 +            } else if (rn->naddrs == 1) {
 +                if (rn->u.addr != r->expect_a) {
@@ -98,32 +63,19 @@ is not included in the response (very special purpose).
 +                    }
 +                }
 +            }
-+        }
-+        if (!r->ipv4) {
 +            rn->naddrs = 0;
-+            naddrs = (rn->naddrs6 == (u_short) -1) ? 0 : rn->naddrs6;
-+            if (!naddrs) {
-+                goto nxdomain;
-+            }
 +        }
-+
+ 
          if (naddrs == 1 && rn->naddrs == 1) {
              addrs = NULL;
- 
 --- a/src/core/ngx_resolver.h
 +++ b/src/core/ngx_resolver.h
-@@ -176,11 +176,13 @@ struct ngx_resolver_s {
-     ngx_queue_t               addr_expire_queue;
+@@ -190,6 +190,8 @@
+     time_t                    expire;
+     time_t                    valid;
  
- #if (NGX_HAVE_INET6)
--    ngx_uint_t                ipv6;                 /* unsigned  ipv6:1; */
-+    ngx_uint_t                ipv4:1;
-+    ngx_uint_t                ipv6:1;
-     ngx_rbtree_t              addr6_rbtree;
-     ngx_rbtree_node_t         addr6_sentinel;
-     ngx_queue_t               addr6_resend_queue;
-     ngx_queue_t               addr6_expire_queue;
 +    in_addr_t                 expect_a;
- #endif
++
+     ngx_uint_t                log_level;
+ };
  
-     time_t                    resend_timeout;
